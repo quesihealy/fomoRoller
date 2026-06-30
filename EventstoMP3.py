@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from datetime import datetime, timedelta
@@ -10,9 +11,12 @@ load_dotenv()
 
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
 VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID")
-EVENTS_API_URL = os.environ.get("EVENTS_API_URL")
+BURNING_MAN_API_KEY = os.environ.get("BURNING_MAN_API_KEY")
+BURNING_MAN_YEAR = int(os.environ.get("BURNING_MAN_YEAR", datetime.now().year))
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "./audio")
+DATA_DIR = os.environ.get("DATA_DIR", "./data")
 BM_TZ = ZoneInfo("America/Los_Angeles")
+BM_EVENTS_URL = "https://api.burningman.org/api/event"
 
 
 def require_env():
@@ -20,7 +24,7 @@ def require_env():
         name for name, val in {
             "ELEVENLABS_API_KEY": ELEVENLABS_API_KEY,
             "ELEVENLABS_VOICE_ID": VOICE_ID,
-            "EVENTS_API_URL": EVENTS_API_URL,
+            "BURNING_MAN_API_KEY": BURNING_MAN_API_KEY,
         }.items() if not val
     ]
     if missing:
@@ -28,9 +32,22 @@ def require_env():
 
 
 def fetch_events():
-    response = requests.get(EVENTS_API_URL, timeout=30)
+    response = requests.get(
+        BM_EVENTS_URL,
+        headers={"X-API-Key": BURNING_MAN_API_KEY},
+        params={"year": BURNING_MAN_YEAR},
+        timeout=30,
+    )
     response.raise_for_status()
-    return response.json()
+    data = response.json()
+
+    os.makedirs(DATA_DIR, exist_ok=True)
+    cache_path = os.path.join(DATA_DIR, f"events_{BURNING_MAN_YEAR}.json")
+    with open(cache_path, "w") as f:
+        json.dump(data, f, indent=2)
+    print(f"  Cached response to {cache_path}")
+
+    return data
 
 
 def build_slot_map(events):
@@ -87,7 +104,7 @@ def main():
     require_env()
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    print("Fetching events...")
+    print(f"Fetching events for {BURNING_MAN_YEAR}...")
     events = fetch_events()
     print(f"  Got {len(events)} events")
 
