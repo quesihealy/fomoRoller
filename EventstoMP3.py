@@ -20,6 +20,7 @@ OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "./audio")
 DATA_DIR = os.environ.get("DATA_DIR", "./data")
 BM_TZ = ZoneInfo("America/Los_Angeles")
 BM_EVENTS_URL = "https://api.burningman.org/api/event"
+BM_CAMPS_URL = "https://api.burningman.org/api/camp"
 
 
 def require_env():
@@ -80,6 +81,28 @@ def fetch_events():
     return data
 
 
+def fetch_camps():
+    cache_path = os.path.join(DATA_DIR, f"camps_{BURNING_MAN_YEAR}.json")
+    if os.path.exists(cache_path):
+        with open(cache_path) as f:
+            camps = json.load(f)
+    else:
+        response = requests.get(
+            BM_CAMPS_URL,
+            headers={"X-API-Key": BURNING_MAN_API_KEY},
+            params={"year": BURNING_MAN_YEAR},
+            timeout=30,
+        )
+        response.raise_for_status()
+        camps = response.json()
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump(camps, f, indent=2)
+        print(f"  Cached camps to {cache_path}")
+
+    return {c["uid"]: c["name"] for c in camps if c.get("uid") and c.get("name")}
+
+
 def build_slot_map(events):
     slots = {}
     for event in events:
@@ -95,21 +118,20 @@ def build_slot_map(events):
     return slots
 
 
-def build_script(slot_key, events):
-    dt = datetime.strptime(slot_key, "%Y-%m-%d_%H-%M").replace(tzinfo=BM_TZ)
-    time_str = dt.strftime("%A, %B %d at %I:%M %p").replace(" 0", " ")
-
-    lines = [f"It's {time_str} on the playa. Here's what's happening right now."]
-
+def build_script(events, camp_names):
+    lines = []
     for e in events:
         title = e.get("title", "Untitled")
         desc = e.get("description", "")
-        etype = e.get("event_type", {}).get("label", "")
         snippet = desc[:120].rsplit(" ", 1)[0] + "..." if len(desc) > 120 else desc
-        lines.append(f"{title}. {etype}. {snippet}")
+        camp = camp_names.get(e.get("hosted_by_camp"))
+        if camp:
+            lines.append(f"{camp} is hosting {title}. {snippet}")
+        else:
+            lines.append(f"{title}. {snippet}")
 
-    lines.append("Get out there. You're missing it.")
-    return " ... ".join(lines)
+    lines.append("Are you still FOMO-rolling? Chill dog.")
+    return ' <break time="2.0s" /> '.join(lines)
 
 
 def text_to_mp3(text, voice_id, filepath):
@@ -139,13 +161,17 @@ def main():
     events = fetch_events()
     print(f"  Got {len(events)} events")
 
-    print("Building slot map...")
+    # print("Building slot map...")
     # slot_map = build_slot_map(events)
-    print(f"  {len(slot_map)} active slots")
+    # print(f"  {len(slot_map)} active slots")
 
-    print("Building voice pool...")
+    # print("Fetching camp names...")
+    # camp_names = fetch_camps()
+    # print(f"  {len(camp_names)} camps")
+
+    # print("Building voice pool...")
     # voice_pool = build_voice_pool()
-    print(f"  {len(voice_pool)} voices: {', '.join(name for name, _ in voice_pool)}")
+    # print(f"  {len(voice_pool)} voices: {', '.join(name for name, _ in voice_pool)}")
 
     # Uncomment to generate audio (will hit ElevenLabs API and use credits):
     # print("Generating audio...")
@@ -154,7 +180,7 @@ def main():
     #     if os.path.exists(filepath):
     #         print(f"  Skipping {slot_key} (already exists)")
     #         continue
-    #     script = build_script(slot_key, slot_events)
+    #     script = build_script(slot_events, camp_names)
     #     voice_name, voice_id = random.choice(voice_pool)
     #     print(f"  {slot_key}: {len(slot_events)} events, {len(script)} chars, voice={voice_name}")
     #     text_to_mp3(script, voice_id, filepath)
