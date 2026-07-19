@@ -76,18 +76,44 @@ def build_slot_map(events: list[dict]) -> dict[str, list[dict]]:
     return slots
 
 
+def eligible_events(events: list[dict], camp_names: dict[str, str]) -> list[dict]:
+    """Events worth reading: hosted by a known camp, with a real description,
+    and no duplicate title/description within the slot."""
+    seen_titles: set[str] = set()
+    seen_descs: set[str] = set()
+    keep = []
+    for e in events:
+        title = (e.get("title") or "").strip()
+        desc = (e.get("description") or "").strip()
+        if e.get("hosted_by_camp") not in camp_names:
+            continue
+        if not desc or desc.lower() == title.lower():
+            continue
+        if title.lower() in seen_titles or desc.lower() in seen_descs:
+            continue
+        seen_titles.add(title.lower())
+        seen_descs.add(desc.lower())
+        keep.append(e)
+    return keep
+
+
 def build_script(events: list[dict], camp_names: dict[str, str]) -> list[str]:
     """Lines to read for one slot; the provider decides how to pause between them."""
-    if len(events) > config.EVENTS_PER_SLOT:
-        events = random.sample(events, config.EVENTS_PER_SLOT)
+    # Quiet slots read everything they have; only busy ones get filtered
+    if len(events) >= config.EVENTS_PER_SLOT:
+        candidates = eligible_events(events, camp_names) or events
+    else:
+        candidates = events
+    if len(candidates) > config.EVENTS_PER_SLOT:
+        candidates = random.sample(candidates, config.EVENTS_PER_SLOT)
 
     lines = []
-    for e in events:
+    for e in candidates:
         title = e.get("title", "Untitled")
         desc = e.get("description", "")
         snippet = desc[:120].rsplit(" ", 1)[0] + "..." if len(desc) > 120 else desc
         camp = camp_names.get(e.get("hosted_by_camp"))
-        if camp:
+        if camp and camp.lower() != title.lower():
             lines.append(f"{camp} is hosting {title}. {snippet}")
         else:
             lines.append(f"{title}. {snippet}")
