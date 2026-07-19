@@ -111,12 +111,11 @@ def build_script(events: list[dict], camp_names: dict[str, str]) -> list[str]:
     for e in candidates:
         title = e.get("title", "Untitled")
         desc = e.get("description", "")
-        snippet = desc[:120].rsplit(" ", 1)[0] + "..." if len(desc) > 120 else desc
         camp = camp_names.get(e.get("hosted_by_camp"))
         if camp and camp.lower() != title.lower():
-            lines.append(f"{camp} is hosting {title}. {snippet}")
+            lines.append(f"{camp} is hosting {title}. {desc}")
         else:
-            lines.append(f"{title}. {snippet}")
+            lines.append(f"{title}. {desc}")
 
     lines.append("Are you still FOMO-rolling? Chill dog.")
     return lines
