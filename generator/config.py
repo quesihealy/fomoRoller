@@ -1,12 +1,15 @@
-"""Environment-driven settings, loaded once from .env."""
+"""Environment-driven settings, loaded once from the repo-root .env."""
 
 import os
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
-load_dotenv()
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+load_dotenv(REPO_ROOT / ".env")
 
 # "google" (free tier covers the POC), "elevenlabs", or "typecast"
 TTS_PROVIDER = os.environ.get("TTS_PROVIDER", "google")
@@ -32,7 +35,7 @@ PAUSE_SECONDS = 2
 BURNING_MAN_API_KEY = os.environ.get("BURNING_MAN_API_KEY")
 BURNING_MAN_YEAR = int(os.environ.get("BURNING_MAN_YEAR", datetime.now().year))
 
-OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "./audio")
-DATA_DIR = os.environ.get("DATA_DIR", "./data")
+OUTPUT_DIR = os.environ.get("OUTPUT_DIR", str(REPO_ROOT / "audio"))
+DATA_DIR = os.environ.get("DATA_DIR", str(REPO_ROOT / "data"))
 
 BM_TZ = ZoneInfo("America/Los_Angeles")
