@@ -117,7 +117,6 @@ def build_script(events: list[dict], camp_names: dict[str, str]) -> list[str]:
         else:
             lines.append(f"{title}. {desc}")
 
-    lines.append("Are you still FOMO-rolling? Chill dog.")
     return lines
 
 
