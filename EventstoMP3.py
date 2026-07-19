@@ -7,6 +7,7 @@ selected by TTS_PROVIDER (see config.py / .env.example).
 
 import argparse
 import json
+import math
 import os
 import random
 import sys
@@ -97,6 +98,16 @@ def eligible_events(events: list[dict], camp_names: dict[str, str]) -> list[dict
     return keep
 
 
+def slot_footprint(event: dict) -> int:
+    """How many half-hour slots this event occupies across the whole week."""
+    total = 0
+    for occ in event.get("occurrence_set", []):
+        start = datetime.fromisoformat(occ["start_time"])
+        end = datetime.fromisoformat(occ["end_time"])
+        total += max(1, int((end - start).total_seconds() // 1800))
+    return total
+
+
 def build_script(events: list[dict], camp_names: dict[str, str]) -> list[str]:
     """Lines to read for one slot; the provider decides how to pause between them."""
     # Quiet slots read everything they have; only busy ones get filtered
@@ -105,7 +116,14 @@ def build_script(events: list[dict], camp_names: dict[str, str]) -> list[str]:
     else:
         candidates = events
     if len(candidates) > config.EVENTS_PER_SLOT:
-        candidates = random.sample(candidates, config.EVENTS_PER_SLOT)
+        # Weighted draw without replacement favoring rare events: a one-off
+        # happening now beats a lounge that runs all week (Efraimidis-Spirakis,
+        # weight 1/slot_footprint)
+        candidates = sorted(
+            candidates,
+            key=lambda e: math.log(1 - random.random()) * slot_footprint(e),
+            reverse=True,
+        )[: config.EVENTS_PER_SLOT]
 
     lines = []
     for e in candidates:
