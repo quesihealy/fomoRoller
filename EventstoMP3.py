@@ -78,6 +78,9 @@ def build_slot_map(events: list[dict]) -> dict[str, list[dict]]:
 
 def build_script(events: list[dict], camp_names: dict[str, str]) -> list[str]:
     """Lines to read for one slot; the provider decides how to pause between them."""
+    if len(events) > config.EVENTS_PER_SLOT:
+        events = random.sample(events, config.EVENTS_PER_SLOT)
+
     lines = []
     for e in events:
         title = e.get("title", "Untitled")

@@ -22,6 +22,10 @@ if not VOICE_ID and TTS_PROVIDER == "elevenlabs":
     VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID")
 VOICE_POOL_SIZE = int(os.environ.get("VOICE_POOL_SIZE", "20"))
 
+# Each slot reads at most this many randomly chosen events (keeps MP3s
+# ~90 seconds and TTS cost sane; busy slots have 500+ events)
+EVENTS_PER_SLOT = int(os.environ.get("EVENTS_PER_SLOT", "7"))
+
 # Seconds of silence between events in a slot's readout
 PAUSE_SECONDS = 2
 
