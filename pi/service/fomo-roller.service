@@ -1,0 +1,16 @@
+[Unit]
+Description=FOMO Roller Playback
+After=network.target bluetooth.target sound.target
+Wants=bluetooth.target
+
+[Service]
+ExecStartPre=/bin/sleep 10
+ExecStart=/usr/bin/python3 /home/pi/fomo-roller/playback.py
+WorkingDirectory=/home/pi/fomo-roller
+Restart=on-failure
+RestartSec=5
+User=pi
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

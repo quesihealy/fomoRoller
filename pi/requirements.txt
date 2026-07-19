@@ -1,0 +1,6 @@
+# Python deps for pi/playback.py
+# NB: python-vlc is only the bindings — the VLC engine itself comes from apt:
+#   sudo apt install vlc
+# (bluealsa is also needed for the Bluetooth audio route)
+python-vlc
+smbus2
