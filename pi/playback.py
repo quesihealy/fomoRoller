@@ -6,15 +6,16 @@ Runs on the Raspberry Pi Zero 2W inside the foam roller.
 Set this up to auto-start on boot via systemd.
 
 Behaviour:
-  - Polls MPU-6050 for motion 10x/second
+  - Polls MPU-6050 for motion 10x/second (change between consecutive
+    readings, so it works in any resting orientation)
   - When motion detected: fade in and play the current 30-min slot MP3
   - When roller stops for PAUSE_TIMEOUT seconds: fade out and pause
   - When rolling resumes: rewind REWIND_MS and fade back in
   - When a new 30-min slot starts mid-session: seamlessly switch files
 
 Dependencies:
-    sudo apt install vlc python3-vlc python3-smbus
-    pip3 install smbus2
+    sudo apt install vlc
+    pip3 install -r requirements.txt   # python-vlc, smbus2
 """
 
 import vlc
@@ -33,7 +34,9 @@ BM_TZ             = ZoneInfo("America/Los_Angeles")
 
 # Motion detection
 MPU_ADDR          = 0x68        # I2C address — pull AD0 high for 0x69
-MOTION_THRESHOLD  = 800         # tune this: higher = less sensitive
+MOTION_THRESHOLD  = 800         # min |delta| between consecutive Z readings
+                                # to count as motion; tune on hardware
+                                # (higher = less sensitive)
 POLL_INTERVAL     = 0.1         # seconds between motion checks (10Hz)
 
 # Playback
@@ -46,8 +49,8 @@ MAX_VOLUME        = 100         # 0–200; 100 = unity, push higher if needed
 FADE_DURATION     = 1.5         # seconds for a full fade in or out
 FADE_STEPS        = 20
 
-# Bluetooth — replace with your speaker's MAC address
-BT_DEVICE_MAC     = "XX:XX:XX:XX:XX:XX"
+# Bluetooth — speaker MAC comes from the environment (see the systemd unit)
+BT_DEVICE_MAC     = os.environ.get("FOMO_BT_MAC", "XX:XX:XX:XX:XX:XX")
 
 # Logging
 logging.basicConfig(
@@ -66,18 +69,10 @@ def init_mpu(bus):
     log.info("MPU-6050 ready")
 
 def read_accel_z(bus):
-    high = bus.read_byte_data(MPU_ADDR, 0x3F)
-    low  = bus.read_byte_data(MPU_ADDR, 0x40)
-    val  = (high << 8) | low
-    return val - 65536 if val > 32767 else val
-
-def calibrate_baseline(bus, samples=50):
-    """Average a few readings at rest to establish baseline."""
-    log.info("Calibrating motion baseline — keep roller still...")
-    readings = [read_accel_z(bus) for _ in range(samples)]
-    baseline = sum(readings) // len(readings)
-    log.info(f"  Baseline: {baseline}")
-    return baseline
+    # Single block read so high/low bytes come from the same sample
+    # (two byte reads can tear if the sensor updates in between)
+    data = bus.read_i2c_block_data(MPU_ADDR, 0x3F, 2)
+    return int.from_bytes(bytes(data), "big", signed=True)
 
 # ── Audio file helpers ────────────────────────────────────────────────────────
 
@@ -112,10 +107,11 @@ class FomoPlayer:
 
     # ── Internal fade ──────────────────────────────────────────────────────
 
-    def _fade(self, direction, callback=None):
+    def _fade(self, direction, cancel, callback=None):
         """
         Ramp volume up ('in') or down ('out') over FADE_DURATION seconds.
-        Cancellable: checks self._fade_cancel between steps.
+        Cancellable: checks the cancel event it was started with between
+        steps (never a newer one, so a straggler thread stays cancelled).
         """
         step_sleep = FADE_DURATION / FADE_STEPS
         if direction == "in":
@@ -124,24 +120,27 @@ class FomoPlayer:
             volumes = [int(MAX_VOLUME * i / FADE_STEPS) for i in range(FADE_STEPS - 1, -1, -1)]
 
         for v in volumes:
-            if self._fade_cancel.is_set():
+            if cancel.is_set():
                 return
             self._player.audio_set_volume(v)
             time.sleep(step_sleep)
 
-        if callback and not self._fade_cancel.is_set():
+        if callback and not cancel.is_set():
             callback()
 
-    def _start_fade(self, direction, callback=None):
-        """Cancel any in-progress fade and start a new one."""
+    def _cancel_fade(self):
+        """Stop any in-progress fade (and its pending callback) synchronously."""
         self._fade_cancel.set()
         if self._fade_thread and self._fade_thread.is_alive():
             self._fade_thread.join(timeout=FADE_DURATION + 0.2)
 
+    def _start_fade(self, direction, callback=None):
+        """Cancel any in-progress fade and start a new one."""
+        self._cancel_fade()
         self._fade_cancel = threading.Event()
         t = threading.Thread(
             target=self._fade,
-            args=(direction, callback),
+            args=(direction, self._fade_cancel, callback),
             daemon=True
         )
         self._fade_thread = t
@@ -151,8 +150,15 @@ class FomoPlayer:
 
     def play(self, filepath, seek_ms=0):
         """Load a file and start playing with a fade in, optionally seeking first."""
+        # Kill any fade-out first so its pause callback can't land after play()
+        self._cancel_fade()
+
         if not os.path.exists(filepath):
-            log.warning(f"Audio file not found: {filepath}")
+            # Remember it anyway so the main loop doesn't retry (and warn)
+            # 10x/second for the whole slot — e.g. outside event week
+            if filepath != self._current_file:
+                log.warning(f"Audio file not found: {filepath}")
+                self._current_file = filepath
             return
 
         media = self._instance.media_new(filepath)
@@ -180,6 +186,10 @@ class FomoPlayer:
         Resume from current position minus REWIND_MS, with fade in.
         Called when the roller starts moving again after a pause.
         """
+        # Kill an in-flight fade-out first, otherwise its pause callback can
+        # fire just after our play() and leave the player silently paused
+        self._cancel_fade()
+
         pos        = self._player.get_time()
         resume_pos = max(0, pos - REWIND_MS)
         log.info(f"Resuming with rewind: {pos/1000:.1f}s → {resume_pos/1000:.1f}s")
@@ -199,20 +209,24 @@ class FomoPlayer:
 def main():
     log.info("FOMO Roller starting up")
 
-    bus      = smbus2.SMBus(1)
+    bus = smbus2.SMBus(1)
     init_mpu(bus)
-    baseline = calibrate_baseline(bus)
 
     player         = FomoPlayer()
     last_motion    = 0.0
     is_paused      = False
+    prev_z         = read_accel_z(bus)
 
     log.info("Listening for motion...")
 
     while True:
-        now   = time.time()
-        z     = read_accel_z(bus)
-        moving = abs(z - baseline) > MOTION_THRESHOLD
+        now    = time.time()
+        z      = read_accel_z(bus)
+        # Compare consecutive readings, not a fixed baseline: gravity's share
+        # of Z depends on the roller's resting angle, so a boot-time baseline
+        # would read as permanent "motion" once the roller settles anywhere new
+        moving = abs(z - prev_z) > MOTION_THRESHOLD
+        prev_z = z
 
         if moving:
             last_motion = now

@@ -7,10 +7,12 @@ Wants=bluetooth.target
 ExecStartPre=/bin/sleep 10
 ExecStart=/usr/bin/python3 /home/pi/fomo-roller/playback.py
 WorkingDirectory=/home/pi/fomo-roller
-Restart=on-failure
+Restart=always
 RestartSec=5
 User=pi
 Environment=PYTHONUNBUFFERED=1
+# Your Bluetooth speaker's MAC address
+Environment=FOMO_BT_MAC=XX:XX:XX:XX:XX:XX
 
 [Install]
 WantedBy=multi-user.target
