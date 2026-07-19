@@ -1,3 +1,5 @@
+import base64
+import html
 import json
 import os
 import random
@@ -10,10 +12,20 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# "google" (free tier covers the POC), "elevenlabs", or "typecast"
+TTS_PROVIDER = os.environ.get("TTS_PROVIDER", "google")
+
+GOOGLE_TTS_API_KEY = os.environ.get("GOOGLE_TTS_API_KEY")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
-# Optional: pin a single voice. If unset, each MP3 gets a random popular character voice.
-VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID")
+TYPECAST_API_KEY = os.environ.get("TYPECAST_API_KEY")
+
+# Optional: pin a single voice for the active provider. If unset, each MP3
+# gets a random voice from the provider's pool.
+VOICE_ID = os.environ.get("TTS_VOICE_ID")
+if not VOICE_ID and TTS_PROVIDER == "elevenlabs":
+    VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID")
 VOICE_POOL_SIZE = int(os.environ.get("VOICE_POOL_SIZE", "20"))
+
 BURNING_MAN_API_KEY = os.environ.get("BURNING_MAN_API_KEY")
 BURNING_MAN_YEAR = int(os.environ.get("BURNING_MAN_YEAR", datetime.now().year))
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "./audio")
@@ -22,11 +34,22 @@ BM_TZ = ZoneInfo("America/Los_Angeles")
 BM_EVENTS_URL = "https://api.burningman.org/api/event"
 BM_CAMPS_URL = "https://api.burningman.org/api/camp"
 
+PAUSE_SECONDS = 2
+
+PROVIDER_KEYS = {
+    "google": ("GOOGLE_TTS_API_KEY", GOOGLE_TTS_API_KEY),
+    "elevenlabs": ("ELEVENLABS_API_KEY", ELEVENLABS_API_KEY),
+    "typecast": ("TYPECAST_API_KEY", TYPECAST_API_KEY),
+}
+
 
 def require_env():
+    if TTS_PROVIDER not in PROVIDER_KEYS:
+        sys.exit(f"Unknown TTS_PROVIDER '{TTS_PROVIDER}'. Use one of: {', '.join(PROVIDER_KEYS)}.")
+    key_name, key_val = PROVIDER_KEYS[TTS_PROVIDER]
     missing = [
         name for name, val in {
-            "ELEVENLABS_API_KEY": ELEVENLABS_API_KEY,
+            key_name: key_val,
             "BURNING_MAN_API_KEY": BURNING_MAN_API_KEY,
         }.items() if not val
     ]
@@ -34,15 +57,51 @@ def require_env():
         sys.exit(f"Missing required env vars: {', '.join(missing)}. See .env.example.")
 
 
-def build_voice_pool():
-    """Return [(name, voice_id)] of the most-used character voices in the Voice Library.
+# --- Google Cloud TTS ------------------------------------------------------
+# Free tier: 4M chars/month WaveNet + 1M chars/month Neural2 — covers the
+# whole project at 7 events/slot. Both families support SSML breaks
+# (Chirp3 HD doesn't, so it's excluded).
 
-    Library voices work directly by ID — no need to save them to My Voices
-    (not available to free tier via API, though).
-    """
-    if VOICE_ID:
-        return [("pinned", VOICE_ID)]
+def google_voice_pool():
+    response = requests.get(
+        "https://texttospeech.googleapis.com/v1/voices",
+        params={"languageCode": "en-US", "key": GOOGLE_TTS_API_KEY},
+        timeout=30,
+    )
+    response.raise_for_status()
+    voices = [
+        v["name"] for v in response.json()["voices"]
+        if "Neural2" in v["name"] or "Wavenet" in v["name"]
+    ]
+    random.shuffle(voices)
+    return [(name, name) for name in voices[:VOICE_POOL_SIZE]]
 
+
+def google_tts(lines, voice_name, filepath):
+    ssml = (
+        "<speak>"
+        + f' <break time="{PAUSE_SECONDS}s"/> '.join(html.escape(line) for line in lines)
+        + "</speak>"
+    )
+    response = requests.post(
+        "https://texttospeech.googleapis.com/v1/text:synthesize",
+        params={"key": GOOGLE_TTS_API_KEY},
+        json={
+            "input": {"ssml": ssml},
+            "voice": {"languageCode": "en-US", "name": voice_name},
+            "audioConfig": {"audioEncoding": "MP3"},
+        },
+        timeout=120,
+    )
+    response.raise_for_status()
+    with open(filepath, "wb") as f:
+        f.write(base64.b64decode(response.json()["audioContent"]))
+
+
+# --- ElevenLabs -------------------------------------------------------------
+# Paid plan required for Voice Library voices via API (free tier gets 402).
+
+def elevenlabs_voice_pool():
     response = requests.get(
         "https://api.elevenlabs.io/v1/shared-voices",
         headers={"xi-api-key": ELEVENLABS_API_KEY},
@@ -55,11 +114,81 @@ def build_voice_pool():
         timeout=30,
     )
     response.raise_for_status()
+    return [(v["name"], v["voice_id"]) for v in response.json()["voices"]]
 
-    pool = [(v["name"], v["voice_id"]) for v in response.json()["voices"]]
+
+def elevenlabs_tts(lines, voice_id, filepath):
+    text = f' <break time="{PAUSE_SECONDS}.0s" /> '.join(lines)
+    response = requests.post(
+        f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+        headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
+        json={
+            "text": text,
+            # Library voices don't support the legacy monolingual_v1 model
+            "model_id": "eleven_multilingual_v2",
+            "voice_settings": {"stability": 0.4, "similarity_boost": 0.75},
+        },
+        timeout=120,
+    )
+    response.raise_for_status()
+    with open(filepath, "wb") as f:
+        f.write(response.content)
+
+
+# --- Typecast ---------------------------------------------------------------
+# No SSML support: pauses are approximated with paragraph breaks. Untested
+# until we have an API key.
+
+def typecast_voice_pool():
+    response = requests.get(
+        "https://api.typecast.ai/v1/voices",
+        headers={"X-API-KEY": TYPECAST_API_KEY},
+        timeout=30,
+    )
+    response.raise_for_status()
+    voices = response.json()
+    random.shuffle(voices)
+    return [(v["voice_name"], v["voice_id"]) for v in voices[:VOICE_POOL_SIZE]]
+
+
+def typecast_tts(lines, voice_id, filepath):
+    response = requests.post(
+        "https://api.typecast.ai/v1/text-to-speech",
+        headers={"X-API-KEY": TYPECAST_API_KEY, "Content-Type": "application/json"},
+        json={
+            "voice_id": voice_id,
+            "text": "\n\n".join(lines),
+            "model": "ssfm-v30",
+            "output": {"audio_format": "mp3"},
+        },
+        timeout=120,
+    )
+    response.raise_for_status()
+    with open(filepath, "wb") as f:
+        f.write(response.content)
+
+
+PROVIDERS = {
+    "google": (google_voice_pool, google_tts),
+    "elevenlabs": (elevenlabs_voice_pool, elevenlabs_tts),
+    "typecast": (typecast_voice_pool, typecast_tts),
+}
+
+
+def build_voice_pool():
+    if VOICE_ID:
+        return [("pinned", VOICE_ID)]
+    pool_fn, _ = PROVIDERS[TTS_PROVIDER]
+    pool = pool_fn()
     if not pool:
-        sys.exit("Voice Library search returned no voices. Set ELEVENLABS_VOICE_ID to pin one instead.")
+        sys.exit(f"{TTS_PROVIDER} returned no voices. Set TTS_VOICE_ID to pin one instead.")
     return pool
+
+
+def text_to_mp3(lines, voice_id, filepath):
+    _, tts_fn = PROVIDERS[TTS_PROVIDER]
+    tts_fn(lines, voice_id, filepath)
+    print(f"  Saved: {filepath}")
 
 
 def fetch_events():
@@ -119,6 +248,7 @@ def build_slot_map(events):
 
 
 def build_script(events, camp_names):
+    """Return the list of lines to read; the provider decides how to pause between them."""
     lines = []
     for e in events:
         title = e.get("title", "Untitled")
@@ -131,26 +261,7 @@ def build_script(events, camp_names):
             lines.append(f"{title}. {snippet}")
 
     lines.append("Are you still FOMO-rolling? Chill dog.")
-    return ' <break time="2.0s" /> '.join(lines)
-
-
-def text_to_mp3(text, voice_id, filepath):
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-    response = requests.post(
-        url,
-        headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
-        json={
-            "text": text,
-            # Library voices don't support the legacy monolingual_v1 model
-            "model_id": "eleven_multilingual_v2",
-            "voice_settings": {"stability": 0.4, "similarity_boost": 0.75},
-        },
-        timeout=120,
-    )
-    response.raise_for_status()
-    with open(filepath, "wb") as f:
-        f.write(response.content)
-    print(f"  Saved: {filepath}")
+    return lines
 
 
 def main():
@@ -169,21 +280,21 @@ def main():
     # camp_names = fetch_camps()
     # print(f"  {len(camp_names)} camps")
 
-    # print("Building voice pool...")
+    # print(f"Building voice pool ({TTS_PROVIDER})...")
     # voice_pool = build_voice_pool()
     # print(f"  {len(voice_pool)} voices: {', '.join(name for name, _ in voice_pool)}")
 
-    # Uncomment to generate audio (will hit ElevenLabs API and use credits):
+    # Uncomment to generate audio (will hit the TTS API and use credits/quota):
     # print("Generating audio...")
     # for slot_key, slot_events in sorted(slot_map.items()):
     #     filepath = os.path.join(OUTPUT_DIR, f"{slot_key}.mp3")
     #     if os.path.exists(filepath):
     #         print(f"  Skipping {slot_key} (already exists)")
     #         continue
-    #     script = build_script(slot_events, camp_names)
+    #     lines = build_script(slot_events, camp_names)
     #     voice_name, voice_id = random.choice(voice_pool)
-    #     print(f"  {slot_key}: {len(slot_events)} events, {len(script)} chars, voice={voice_name}")
-    #     text_to_mp3(script, voice_id, filepath)
+    #     print(f"  {slot_key}: {len(slot_events)} events, voice={voice_name}")
+    #     text_to_mp3(lines, voice_id, filepath)
 
     print("Done. Copy ./audio to the SD card.")
 
