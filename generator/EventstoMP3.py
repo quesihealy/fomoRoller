@@ -125,7 +125,12 @@ def build_script(events: list[dict], camp_names: dict[str, str]) -> list[str]:
             reverse=True,
         )[: config.EVENTS_PER_SLOT]
 
-    lines = []
+    total = len(events)
+    opener = f"You are missing out on {total} event{'' if total == 1 else 's'} happening right now."
+    if total > len(candidates):
+        opener += " To name a few:"
+    lines = [opener]
+
     for e in candidates:
         title = e.get("title", "Untitled")
         desc = e.get("description", "")
@@ -134,6 +139,9 @@ def build_script(events: list[dict], camp_names: dict[str, str]) -> list[str]:
             lines.append(f"{camp} is hosting {title}. {desc}")
         else:
             lines.append(f"{title}. {desc}")
+
+    if total > len(candidates):
+        lines.append(f"That's {len(candidates)} of the {total} events. Go find the others.")
 
     return lines
 
