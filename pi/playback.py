@@ -33,7 +33,9 @@ AUDIO_DIR         = "/home/pi/audio"
 BM_TZ             = ZoneInfo("America/Los_Angeles")
 
 # Motion detection
-MPU_ADDR          = 0x68        # I2C address — pull AD0 high for 0x69
+MPU_ADDR          = 0x69        # I2C address — 0x68 collides with the PiSugar
+                                 # 3's RTC (see SETUP.md step 3), so AD0 is
+                                 # pulled high on this build to land on 0x69
 MOTION_THRESHOLD  = 800         # min |delta| between consecutive Z readings
                                 # to count as motion; tune on hardware
                                 # (higher = less sensitive)

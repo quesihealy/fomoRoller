@@ -25,19 +25,25 @@ PiSugar 3 Plus connects via pogo pins from the back of the Pi and doesn't
 occupy the GPIO header, so the MPU-6050 can be wired to the same I2C bus
 (SDA/SCL/3V3/GND) without a conflict — mechanically.
 
-**Address conflict to avoid:** the PiSugar's I2C address is configurable
-between `0x57` and `0x68`. The MPU-6050 defaults to `0x68` (`0x69` if `AD0`
-is pulled high). Confirm the PiSugar is set to `0x57` — see the [PiSugar 3
-I2C datasheet](https://github.com/PiSugar/PiSugar/wiki/PiSugar-3-I2C-Datasheet) —
-otherwise the two devices collide on the bus.
+**Address conflict to avoid:** the PiSugar 3 occupies **both** `0x57` and
+`0x68` by default — `0x57` for power management, `0x68` for its RTC — it's
+not an either/or choice despite how the docs read. The MPU-6050 also
+defaults to `0x68` (`0x69` if `AD0` is pulled high), so out of the box it
+collides with the PiSugar's RTC. Rather than reconfiguring the PiSugar,
+pull the MPU-6050's `AD0` pin high so it lands on `0x69` instead — that's
+what `playback.py`'s `MPU_ADDR` assumes.
 
-Check both are visible and at distinct addresses:
+Check all three are visible and at distinct addresses:
 
 ```sh
 sudo apt install i2c-tools
 i2cdetect -y 1
-# expect 0x57 (PiSugar) and 0x68 (MPU-6050)
+# expect 0x57 (PiSugar power), 0x68 (PiSugar RTC), 0x69 (MPU-6050)
 ```
+
+If you read `0x68` here expecting it to be the MPU-6050, you'll get
+frozen/zero deltas out of it — you're actually talking to the PiSugar's
+RTC, which doesn't have a Z-accel register at that offset.
 
 ## 4. Make the PiSugar RTC the system clock source
 
