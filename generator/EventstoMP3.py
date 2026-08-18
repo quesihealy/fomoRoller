@@ -39,24 +39,21 @@ def fetch_events() -> list[dict]:
 
 
 def fetch_camps() -> dict[str, str]:
-    """Map camp uid -> camp name, cached locally."""
+    """Fetch camp uid -> camp name from the API, refreshing the local cache."""
+    response = requests.get(
+        "https://api.burningman.org/api/camp",
+        headers={"X-API-Key": config.BURNING_MAN_API_KEY},
+        params={"year": config.BURNING_MAN_YEAR},
+        timeout=30,
+    )
+    response.raise_for_status()
+    camps = response.json()
+
+    os.makedirs(config.DATA_DIR, exist_ok=True)
     cache_path = os.path.join(config.DATA_DIR, f"camps_{config.BURNING_MAN_YEAR}.json")
-    if os.path.exists(cache_path):
-        with open(cache_path) as f:
-            camps = json.load(f)
-    else:
-        response = requests.get(
-            "https://api.burningman.org/api/camp",
-            headers={"X-API-Key": config.BURNING_MAN_API_KEY},
-            params={"year": config.BURNING_MAN_YEAR},
-            timeout=30,
-        )
-        response.raise_for_status()
-        camps = response.json()
-        os.makedirs(config.DATA_DIR, exist_ok=True)
-        with open(cache_path, "w") as f:
-            json.dump(camps, f, indent=2)
-        print(f"  Cached camps to {cache_path}")
+    with open(cache_path, "w") as f:
+        json.dump(camps, f, indent=2)
+    print(f"  Cached camps to {cache_path}")
 
     return {c["uid"]: c["name"] for c in camps if c.get("uid") and c.get("name")}
 
