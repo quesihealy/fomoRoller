@@ -142,20 +142,31 @@ From the Mac, after running the generator:
 rsync -avz --progress audio/ quesihealy@<pi-hostname>.local:/home/quesihealy/audio/
 ```
 
-## 8. Install the systemd service
+## 8. Install the systemd services
+
+Two units: `fomo-bt-connect` reliably connects the Bluetooth speaker at boot
+(retrying, and clearing the rfkill soft-block), and `fomo-roller` runs the
+playback — ordered to start only once the speaker and `bluealsa` are up. Set
+`FOMO_BT_MAC` to your speaker's address in **both** units.
 
 ```sh
-sudo cp service/fomo-roller.service /etc/systemd/system/
-sudo nano /etc/systemd/system/fomo-roller.service   # set FOMO_BT_MAC
+sudo cp service/fomo-bt-connect.service service/fomo-roller.service /etc/systemd/system/
+sudo sed -i 's/XX:XX:XX:XX:XX:XX/AA:BB:CC:DD:EE:FF/' \
+  /etc/systemd/system/fomo-bt-connect.service /etc/systemd/system/fomo-roller.service
+sudo systemctl enable bluealsa                     # audio bridge, on boot
 sudo systemctl daemon-reload
-sudo systemctl enable --now fomo-roller
+sudo systemctl enable --now fomo-bt-connect fomo-roller
 journalctl -u fomo-roller -f   # watch logs
 ```
 
-## 9. Tune motion detection
+The `pisugar-rtc-sync` unit from step 4 also runs before `fomo-roller`, so the
+clock is correct before playback picks an MP3 slot.
 
-`MOTION_THRESHOLD` in `playback.py` is a per-sample delta on the raw
-Z-axis accelerometer reading, not an absolute value — it depends on how
-the sensor is physically mounted. Roll the actual assembled device and
-watch `journalctl -u fomo-roller -f` for false triggers (too low) or
-missed rolls (too high), then adjust and restart the service.
+## 9. Tune roll detection
+
+`playback.py` detects *rolling* from the gyroscope: `GY_ON_DPS` (roll-axis
+rate to count as rolling) and `OFF_MAX_DPS` (off-axis rate above which it's
+being carried, not rolled). Defaults came from `calibrate_motion.py`. If you
+remount the sensor, re-run that tool and adjust; watch
+`journalctl -u fomo-roller -f` for false triggers or missed rolls.
+`ROLL_START_SEC` sets how long you must roll before it (re)starts.

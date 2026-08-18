@@ -1,10 +1,12 @@
 [Unit]
 Description=FOMO Roller Playback
-After=network.target bluetooth.target sound.target
-Wants=bluetooth.target
+# Wait for the speaker connect and the ALSA bridge so VLC has an audio sink
+After=network.target bluetooth.target sound.target bluealsa.service fomo-bt-connect.service
+Wants=bluetooth.target fomo-bt-connect.service
 
 [Service]
-ExecStartPre=/bin/sleep 10
+# Small settle after the speaker connects so bluealsa exposes its PCM
+ExecStartPre=/bin/sleep 3
 ExecStart=/usr/bin/python3 /home/quesihealy/fomo-roller/playback.py
 WorkingDirectory=/home/quesihealy/fomo-roller
 Restart=always
