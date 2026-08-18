@@ -38,6 +38,10 @@ from zoneinfo import ZoneInfo
 AUDIO_DIR         = os.environ.get("FOMO_AUDIO_DIR", os.path.expanduser("~/audio"))
 BM_TZ             = ZoneInfo("America/Los_Angeles")
 
+# TESTING: set to a filename in AUDIO_DIR to always play that one file,
+# ignoring the clock. Leave None for normal 30-min time-slot playback.
+TEST_AUDIO_FILE   = None
+
 # Roll detection (gyroscope-based). Rolling is sustained rotation about the
 # roller's long axis: a high roll-axis rate (|gy|) while the other two axes
 # stay low. Carrying/bumping tumbles all axes and is rejected. Thresholds
@@ -54,14 +58,16 @@ SMOOTH_WINDOW     = 15          # sliding-median length (~0.75s at 20Hz);
 POLL_INTERVAL     = 0.05        # seconds between checks (20Hz)
 
 # Playback
-PAUSE_TIMEOUT     = 3.0         # how long you can stop rolling before it
-                                # pauses — brief rests (~2s) keep playing
+PAUSE_TIMEOUT     = 2.0         # seconds stopped before it pauses
+ROLL_START_SEC    = 1.0         # must roll this long before (re)starting
+                                # playback — ignores quick brushes/bumps
 REWIND_MS         = 4000        # rewind this many ms on resume
 SLOT_MINUTES      = 30
 
 # Volume
 MAX_VOLUME        = 100         # 0–200; 100 = unity, push higher if needed
-FADE_DURATION     = 1.5         # seconds for a full fade in or out
+FADE_IN_DURATION  = 1.5         # seconds for a full fade in (smooth start)
+FADE_OUT_DURATION = 0.5         # seconds for a full fade out (quick stop)
 FADE_STEPS        = 20
 
 # Bluetooth — speaker MAC comes from the environment (see the systemd unit)
@@ -118,6 +124,8 @@ class RollDetector:
 
 def current_slot_file():
     """Return the path of the MP3 for the current 30-min slot."""
+    if TEST_AUDIO_FILE:
+        return os.path.join(AUDIO_DIR, TEST_AUDIO_FILE)
     now    = datetime.now(BM_TZ)
     minute = 0 if now.minute < SLOT_MINUTES else SLOT_MINUTES
     slot   = now.replace(minute=minute, second=0, microsecond=0)
@@ -149,11 +157,13 @@ class FomoPlayer:
 
     def _fade(self, direction, cancel, callback=None):
         """
-        Ramp volume up ('in') or down ('out') over FADE_DURATION seconds.
-        Cancellable: checks the cancel event it was started with between
-        steps (never a newer one, so a straggler thread stays cancelled).
+        Ramp volume up ('in') or down ('out'). Fade-in and fade-out have
+        separate durations. Cancellable: checks the cancel event it was
+        started with between steps (never a newer one, so a straggler thread
+        stays cancelled).
         """
-        step_sleep = FADE_DURATION / FADE_STEPS
+        duration   = FADE_IN_DURATION if direction == "in" else FADE_OUT_DURATION
+        step_sleep = duration / FADE_STEPS
         if direction == "in":
             volumes = [int(MAX_VOLUME * i / FADE_STEPS) for i in range(1, FADE_STEPS + 1)]
         else:
@@ -172,7 +182,7 @@ class FomoPlayer:
         """Stop any in-progress fade (and its pending callback) synchronously."""
         self._fade_cancel.set()
         if self._fade_thread and self._fade_thread.is_alive():
-            self._fade_thread.join(timeout=FADE_DURATION + 0.2)
+            self._fade_thread.join(timeout=FADE_IN_DURATION + 0.2)
 
     def _start_fade(self, direction, callback=None):
         """Cancel any in-progress fade and start a new one."""
@@ -255,6 +265,7 @@ def main():
     player         = FomoPlayer()
     detector       = RollDetector()
     last_motion    = 0.0
+    roll_start     = None        # when the current roll began (None if stopped)
     is_paused      = False
 
     log.info("Listening for rolling...")
@@ -265,28 +276,38 @@ def main():
         rolling = detector.update(gx, gy, gz)
 
         if rolling:
+            if roll_start is None:
+                roll_start = now
             last_motion = now
-            audio_file  = current_slot_file()
 
-            if audio_file != player.current_file():
-                # New time slot — start fresh
-                player.play(audio_file)
-                is_paused = False
+            # Only (re)start once rolling has been sustained long enough — a
+            # quick brush or bump won't clear this bar. Brief drop-outs mid-
+            # roll (turnarounds) don't reset roll_start; only a real stop does
+            # (handled below via PAUSE_TIMEOUT), so this doesn't re-arm here.
+            if (now - roll_start) >= ROLL_START_SEC:
+                audio_file = current_slot_file()
 
-            elif is_paused:
-                # Same slot, resuming after stillness
-                player.resume()
-                is_paused = False
+                if audio_file != player.current_file():
+                    # New time slot — start fresh
+                    player.play(audio_file)
+                    is_paused = False
 
-            elif player.state() not in (vlc.State.Playing, vlc.State.Opening):
-                # Finished playing — restart from top
-                player.play(audio_file)
-                is_paused = False
+                elif is_paused:
+                    # Same slot, resuming after stillness
+                    player.resume()
+                    is_paused = False
+
+                elif player.state() not in (vlc.State.Playing, vlc.State.Opening):
+                    # Finished playing — restart from top
+                    player.play(audio_file)
+                    is_paused = False
 
         else:
-            # Roller is still
-            if not is_paused and (now - last_motion) > PAUSE_TIMEOUT:
-                if player.state() == vlc.State.Playing:
+            # Roller is still — after PAUSE_TIMEOUT, pause and disarm the
+            # roll timer so the next start needs a fresh full second of rolling
+            if (now - last_motion) > PAUSE_TIMEOUT:
+                roll_start = None
+                if not is_paused and player.state() == vlc.State.Playing:
                     player.pause()
                     is_paused = True
 
