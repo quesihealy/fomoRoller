@@ -50,26 +50,57 @@ RTC, which doesn't have a Z-accel register at that offset.
 There's no internet on the playa, so the Pi can't get the time from NTP —
 and `playback.py` picks which MP3 to play from `datetime.now()`. Without a
 working RTC, every power cycle resets the clock and the roller plays the
-wrong slot until someone fixes it by hand. The PiSugar's onboard RTC
-solves this, but it has to be wired up as the system clock source:
+wrong slot until someone fixes it by hand.
+
+**Important:** the PiSugar 3's RTC is *not* a standard I2C RTC chip — it's
+managed by the PiSugar's onboard microcontroller (at I2C `0x68`), and the
+generic `dtoverlay=i2c-rtc` kernel driver does **not** work with it. There is
+no `/dev/rtc` and `hwclock` won't see it. The supported path is PiSugar's own
+`pisugar-server` software, plus a small boot-time service (in this repo) that
+copies the RTC time into the system clock on every boot.
+
+Install `pisugar-server` (official installer; sets up the service + a web UI
+on `:8421`):
 
 ```sh
-# add to /boot/firmware/config.txt (or /boot/config.txt on older OS)
-dtoverlay=i2c-rtc,<chip>   # see PiSugar 3 docs for the exact chip name
+wget -O pisugar-power-manager.sh https://cdn.pisugar.com/release/pisugar-power-manager.sh \
+  && bash pisugar-power-manager.sh -c release
+systemctl status pisugar-server   # expect active (running)
 ```
 
-Then disable the fake hwclock (it fights with a real one) and confirm the
-RTC survives a reboot:
+Seed the RTC with the correct time while online (NTP has set the clock), using
+the helper in this repo (talks to pisugar-server's command socket on `:8423`):
 
 ```sh
-sudo apt remove fake-hwclock
-sudo systemctl disable fake-hwclock
-sudo hwclock -w   # write current system time to the RTC once, while online
+python3 /home/quesihealy/fomo-roller/rtc_sync.py rtc_pi2rtc   # system -> RTC
+```
+
+Install the boot-sync unit so every power-up sets the system clock *from* the
+RTC (`rtc_rtc2pi`), ordered before `fomo-roller`:
+
+```sh
+sudo cp service/pisugar-rtc-sync.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now pisugar-rtc-sync.service
+```
+
+Verify the offline behaviour — disable NTP, set a wrong time, reboot, and
+confirm the RTC fixes it with no network:
+
+```sh
+sudo timedatectl set-ntp false
+sudo date -s "2020-01-01 12:00:00"
 sudo reboot
-hwclock -r        # should show correct time even with Wi-Fi/NTP unavailable
+# after reboot:
+date                                          # should be correct again
+journalctl -b -u pisugar-rtc-sync.service     # shows the boot-time sync
+sudo timedatectl set-ntp true                 # re-enable NTP for setup use
 ```
 
-Reference: [PiSugar 3 Series wiki](https://github.com/PiSugar/PiSugar/wiki/PiSugar-3-Series).
+Re-seed the RTC (`rtc_pi2rtc`) once more right before deploying, so it starts
+the event with a fresh, NTP-accurate time.
+
+Reference: [PiSugar Power Manager](https://github.com/PiSugar/pisugar-power-manager-rs).
 
 ## 5. Pair the Bluetooth speaker
 

@@ -1,0 +1,16 @@
+[Unit]
+Description=Set system clock from the PiSugar 3 RTC (offline, at boot)
+# Needs pisugar-server up to reach the RTC; must run before playback so the
+# clock is correct before it picks an MP3 slot. No network dependency — this
+# is the offline (playa) time source.
+Requires=pisugar-server.service
+After=pisugar-server.service
+Before=fomo-roller.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/quesihealy/fomo-roller/rtc_sync.py rtc_rtc2pi
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
