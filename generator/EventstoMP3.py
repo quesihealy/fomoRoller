@@ -141,7 +141,7 @@ def build_script(events: list[dict], camp_names: dict[str, str]) -> list[str]:
             lines.append(f"{title}. {desc}")
 
     if total > len(candidates):
-        lines.append(f"That's {len(candidates)} of the {total} events. Go find the others.")
+        lines.append(f"That's {len(candidates)} of the {total} events. Fucking exhausting.")
 
     return lines
 
