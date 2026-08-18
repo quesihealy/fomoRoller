@@ -94,10 +94,10 @@ standalone `bluealsa` package the code's docstring originally referenced.)
 ## 6. Install the Python deps and code
 
 ```sh
-mkdir -p /home/pi/fomo-roller
+mkdir -p /home/quesihealy/fomo-roller
 # copy playback.py, requirements.txt, and service/ here
-python3 -m venv /home/pi/fomo-roller/venv
-/home/pi/fomo-roller/venv/bin/pip install -r /home/pi/fomo-roller/requirements.txt
+python3 -m venv /home/quesihealy/fomo-roller/venv
+/home/quesihealy/fomo-roller/venv/bin/pip install -r /home/quesihealy/fomo-roller/requirements.txt
 ```
 
 Update `ExecStart` in `service/fomo-roller.service` to use the venv's
@@ -108,7 +108,7 @@ python if you don't install system-wide.
 From the Mac, after running the generator:
 
 ```sh
-rsync -avz --progress audio/ pi@<pi-hostname>.local:/home/pi/audio/
+rsync -avz --progress audio/ quesihealy@<pi-hostname>.local:/home/quesihealy/audio/
 ```
 
 ## 8. Install the systemd service

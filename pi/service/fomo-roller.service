@@ -5,12 +5,13 @@ Wants=bluetooth.target
 
 [Service]
 ExecStartPre=/bin/sleep 10
-ExecStart=/usr/bin/python3 /home/pi/fomo-roller/playback.py
-WorkingDirectory=/home/pi/fomo-roller
+ExecStart=/usr/bin/python3 /home/quesihealy/fomo-roller/playback.py
+WorkingDirectory=/home/quesihealy/fomo-roller
 Restart=always
 RestartSec=5
-User=pi
+User=quesihealy
 Environment=PYTHONUNBUFFERED=1
+Environment=FOMO_AUDIO_DIR=/home/quesihealy/audio
 # Your Bluetooth speaker's MAC address
 Environment=FOMO_BT_MAC=XX:XX:XX:XX:XX:XX
 

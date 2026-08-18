@@ -6,9 +6,11 @@ Runs on the Raspberry Pi Zero 2W inside the foam roller.
 Set this up to auto-start on boot via systemd.
 
 Behaviour:
-  - Polls MPU-6050 for motion 10x/second (change between consecutive
-    readings, so it works in any resting orientation)
-  - When motion detected: fade in and play the current 30-min slot MP3
+  - Polls the MPU-6050 gyroscope 20x/second and detects *rolling*
+    specifically: sustained rotation about the roller's long axis (high
+    |gy|) while the other axes stay low. This ignores being picked up,
+    carried, or bumped — those tumble all axes and don't trigger playback.
+  - When rolling detected: fade in and play the current 30-min slot MP3
   - When roller stops for PAUSE_TIMEOUT seconds: fade out and pause
   - When rolling resumes: rewind REWIND_MS and fade back in
   - When a new 30-min slot starts mid-session: seamlessly switch files
@@ -24,25 +26,36 @@ import smbus2
 import threading
 import logging
 import os
+import collections
+from statistics import median
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-AUDIO_DIR         = "/home/pi/audio"
+# Audio location. Defaults to ~/audio for whoever runs the script; the
+# systemd unit sets FOMO_AUDIO_DIR explicitly to override it.
+AUDIO_DIR         = os.environ.get("FOMO_AUDIO_DIR", os.path.expanduser("~/audio"))
 BM_TZ             = ZoneInfo("America/Los_Angeles")
 
-# Motion detection
+# Roll detection (gyroscope-based). Rolling is sustained rotation about the
+# roller's long axis: a high roll-axis rate (|gy|) while the other two axes
+# stay low. Carrying/bumping tumbles all axes and is rejected. Thresholds
+# came from calibrate_motion.py — re-run it if you remount the sensor.
 MPU_ADDR          = 0x69        # I2C address — 0x68 collides with the PiSugar
                                  # 3's RTC (see SETUP.md step 3), so AD0 is
                                  # pulled high on this build to land on 0x69
-MOTION_THRESHOLD  = 800         # min |delta| between consecutive Z readings
-                                # to count as motion; tune on hardware
-                                # (higher = less sensitive)
-POLL_INTERVAL     = 0.1         # seconds between motion checks (10Hz)
+GY_ON_DPS         = 70          # roll-axis rate (°/s) that counts as rolling
+OFF_MAX_DPS       = 45          # if off-axis rate (°/s) exceeds this it's
+                                # being carried/tumbled, not rolled — ignore
+GYRO_LSB_PER_DPS  = 131.0       # MPU-6050 scale at ±250 °/s full-scale
+SMOOTH_WINDOW     = 15          # sliding-median length (~0.75s at 20Hz);
+                                # rejects single-sample glitches and bumps
+POLL_INTERVAL     = 0.05        # seconds between checks (20Hz)
 
 # Playback
-PAUSE_TIMEOUT     = 2.0         # seconds still before pausing
+PAUSE_TIMEOUT     = 3.0         # how long you can stop rolling before it
+                                # pauses — brief rests (~2s) keep playing
 REWIND_MS         = 4000        # rewind this many ms on resume
 SLOT_MINUTES      = 30
 
@@ -65,16 +78,41 @@ log = logging.getLogger("fomo")
 # ── MPU-6050 ──────────────────────────────────────────────────────────────────
 
 def init_mpu(bus):
-    """Wake the MPU-6050 (it starts in sleep mode)."""
-    bus.write_byte_data(MPU_ADDR, 0x6B, 0)
+    """Wake the MPU-6050 and configure the gyro for roll detection."""
+    bus.write_byte_data(MPU_ADDR, 0x6B, 0x00)   # wake (starts in sleep mode)
+    time.sleep(0.1)
+    bus.write_byte_data(MPU_ADDR, 0x1A, 0x03)   # DLPF ~44Hz — cut HF noise
+    bus.write_byte_data(MPU_ADDR, 0x1B, 0x00)   # gyro full-scale ±250 °/s
     time.sleep(0.1)
     log.info("MPU-6050 ready")
 
-def read_accel_z(bus):
-    # Single block read so high/low bytes come from the same sample
-    # (two byte reads can tear if the sensor updates in between)
-    data = bus.read_i2c_block_data(MPU_ADDR, 0x3F, 2)
-    return int.from_bytes(bytes(data), "big", signed=True)
+def read_gyro(bus):
+    """Return (gx, gy, gz) raw counts from one block read (single sample)."""
+    d = bus.read_i2c_block_data(MPU_ADDR, 0x43, 6)
+    def s16(hi, lo):
+        v = (hi << 8) | lo
+        return v - 65536 if v >= 32768 else v
+    return s16(d[0], d[1]), s16(d[2], d[3]), s16(d[4], d[5])
+
+
+class RollDetector:
+    """
+    Detects rolling from the gyro: a sustained high roll-axis rate (|gy|)
+    while the off-axis rate (|gx|+|gz|) stays low. Uses a sliding median so a
+    single torn read or a one-off bump can't trigger it — the rate has to hold
+    across the window. Roll-axis saturation (±250 °/s) just reads as "high".
+    """
+
+    def __init__(self):
+        self._gy  = collections.deque(maxlen=SMOOTH_WINDOW)
+        self._off = collections.deque(maxlen=SMOOTH_WINDOW)
+
+    def update(self, gx, gy, gz):
+        self._gy.append(min(abs(gy), 32767) / GYRO_LSB_PER_DPS)
+        self._off.append((abs(gx) + abs(gz)) / GYRO_LSB_PER_DPS)
+        if len(self._gy) < SMOOTH_WINDOW:
+            return False
+        return median(self._gy) > GY_ON_DPS and median(self._off) < OFF_MAX_DPS
 
 # ── Audio file helpers ────────────────────────────────────────────────────────
 
@@ -215,22 +253,18 @@ def main():
     init_mpu(bus)
 
     player         = FomoPlayer()
+    detector       = RollDetector()
     last_motion    = 0.0
     is_paused      = False
-    prev_z         = read_accel_z(bus)
 
-    log.info("Listening for motion...")
+    log.info("Listening for rolling...")
 
     while True:
-        now    = time.time()
-        z      = read_accel_z(bus)
-        # Compare consecutive readings, not a fixed baseline: gravity's share
-        # of Z depends on the roller's resting angle, so a boot-time baseline
-        # would read as permanent "motion" once the roller settles anywhere new
-        moving = abs(z - prev_z) > MOTION_THRESHOLD
-        prev_z = z
+        now     = time.time()
+        gx, gy, gz = read_gyro(bus)
+        rolling = detector.update(gx, gy, gz)
 
-        if moving:
+        if rolling:
             last_motion = now
             audio_file  = current_slot_file()
 
