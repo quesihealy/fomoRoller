@@ -144,22 +144,24 @@ rsync -avz --progress audio/ quesihealy@<pi-hostname>.local:/home/quesihealy/aud
 
 ## 8. Install the systemd services
 
-Three units: `fomo-bt-connect` reliably connects the Bluetooth speaker at boot
+Four units: `fomo-bt-connect` reliably connects the Bluetooth speaker at boot
 (retrying, and clearing the rfkill soft-block), `fomo-bt-watchdog` keeps it
-connected for the rest of the session, and `fomo-roller` runs the playback —
-ordered to start only once the speaker and `bluealsa` are up. Set `FOMO_BT_MAC`
-to your speaker's address in **all three** units.
+connected for the rest of the session, `fomo-battery-guard` cleanly shuts down
+on low battery, and `fomo-roller` runs the playback — ordered to start only
+once the speaker and `bluealsa` are up. Set `FOMO_BT_MAC` to your speaker's
+address in the **three BT units** (the battery guard needs no MAC).
 
 ```sh
 sudo cp service/fomo-bt-connect.service service/fomo-bt-watchdog.service \
-  service/fomo-roller.service /etc/systemd/system/
+  service/fomo-battery-guard.service service/fomo-roller.service /etc/systemd/system/
 sudo sed -i 's/XX:XX:XX:XX:XX:XX/AA:BB:CC:DD:EE:FF/' \
   /etc/systemd/system/fomo-bt-connect.service \
   /etc/systemd/system/fomo-bt-watchdog.service \
   /etc/systemd/system/fomo-roller.service
 sudo systemctl enable bluealsa                     # audio bridge, on boot
 sudo systemctl daemon-reload
-sudo systemctl enable --now fomo-bt-connect fomo-bt-watchdog fomo-roller
+sudo systemctl enable --now fomo-bt-connect fomo-bt-watchdog \
+  fomo-battery-guard fomo-roller
 journalctl -u fomo-roller -u fomo-bt-watchdog -f   # watch logs
 ```
 
@@ -172,6 +174,12 @@ on, `fomo-bt-watchdog` reconnects it within a few seconds and then restarts
 player can't recover a PCM that disappeared). Test it: with everything running,
 power the speaker off, wait, power it back on, and confirm audio returns on the
 next roll — watch `journalctl -u fomo-bt-watchdog -f` for the drop/reconnect.
+
+**Clean shutdown on low battery:** `fomo-battery-guard` polls the PiSugar via
+pisugar-server and, when the charge drops below ~15% (or ~3.4 V) while not
+charging, issues a clean `shutdown` so the SD card unmounts safely instead of
+the battery hard-cutting power. Thresholds are tunable via `FOMO_BATT_MIN` /
+`FOMO_BATT_VMIN` in the unit. Watch `journalctl -u fomo-battery-guard -f`.
 
 ## 9. Tune roll detection
 

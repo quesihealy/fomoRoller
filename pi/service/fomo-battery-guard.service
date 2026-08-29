@@ -1,0 +1,14 @@
+[Unit]
+Description=FOMO Roller low-battery clean shutdown guard
+# Needs pisugar-server up to read the battery. Runs as root to call shutdown.
+Requires=pisugar-server.service
+After=pisugar-server.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/quesihealy/fomo-roller/battery_guard.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
