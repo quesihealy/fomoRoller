@@ -47,6 +47,11 @@ BM_TZ             = ZoneInfo("America/Los_Angeles")
 # (Its matching <slot>_opener.mp3 is used for the opener automatically.)
 TEST_AUDIO_FILE   = os.environ.get("FOMO_TEST_FILE")
 
+# Played when the current slot has no MP3 — outside the event, or a gap with no
+# events. A short "nothing happening right now" message so a roll isn't just
+# silence. Set FOMO_FALLBACK_FILE="" to stay silent instead. Has no opener.
+FALLBACK_FILE     = os.environ.get("FOMO_FALLBACK_FILE", "no_events.mp3")
+
 # Roll detection (gyroscope-based). Rolling is sustained rotation about the
 # roller's long axis: a high roll-axis rate (|gy|) while the other two axes
 # stay low. Carrying/bumping tumbles all axes and is rejected. Thresholds
@@ -131,14 +136,22 @@ class RollDetector:
 # ── Audio file helpers ────────────────────────────────────────────────────────
 
 def current_slot_file():
-    """Return the path of the event-readout MP3 for the current 30-min slot."""
+    """Path of the event-readout MP3 for the current 30-min slot.
+
+    If that slot has no MP3 (outside the event, or a gap with no events), fall
+    back to FALLBACK_FILE when it exists, otherwise return the missing slot
+    path so the player just stays silent."""
     if TEST_AUDIO_FILE:
         return os.path.join(AUDIO_DIR, TEST_AUDIO_FILE)
     now    = datetime.now(BM_TZ)
     minute = 0 if now.minute < SLOT_MINUTES else SLOT_MINUTES
     slot   = now.replace(minute=minute, second=0, microsecond=0)
-    fname  = slot.strftime("%Y-%m-%d_%H-%M.mp3")
-    return os.path.join(AUDIO_DIR, fname)
+    path   = os.path.join(AUDIO_DIR, slot.strftime("%Y-%m-%d_%H-%M.mp3"))
+    if not os.path.exists(path) and FALLBACK_FILE:
+        fallback = os.path.join(AUDIO_DIR, FALLBACK_FILE)
+        if os.path.exists(fallback):
+            return fallback
+    return path
 
 def current_opener_file():
     """The opener MP3 for the current slot: '<slot>.mp3' -> '<slot>_opener.mp3'."""

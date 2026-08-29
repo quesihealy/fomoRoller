@@ -18,6 +18,14 @@ import requests
 import config
 import tts
 
+# Standalone clip for slots with no events (outside the event, or empty gaps).
+# pi/playback.py falls back to this file when a slot has no MP3. No opener.
+FALLBACK_FILENAME = "no_events.mp3"
+FALLBACK_TEXT = (
+    "No events happening right now. For once, you are not missing out. "
+    "Check back later. Maybe next year will be better."
+)
+
 
 def fetch_events() -> list[dict]:
     response = requests.get(
@@ -183,6 +191,16 @@ def generate_audio(slot_map, camp_names, provider, only_slot=None):
         if not os.path.exists(body_path):
             provider.synthesize(body_lines, voice, body_path)
             print(f"  Saved: {body_path}")
+
+    # One standalone fallback clip for the whole run (played by the Pi when a
+    # slot has no MP3). Skip it when rendering a single --slot sample.
+    if not only_slot:
+        fallback_path = os.path.join(config.OUTPUT_DIR, FALLBACK_FILENAME)
+        if not os.path.exists(fallback_path):
+            voice = random.choice(voice_pool)
+            print(f"  {FALLBACK_FILENAME}: fallback message, voice={voice.name}")
+            provider.synthesize([FALLBACK_TEXT], voice, fallback_path)
+            print(f"  Saved: {fallback_path}")
 
 
 def parse_args() -> argparse.Namespace:
