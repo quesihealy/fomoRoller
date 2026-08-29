@@ -12,7 +12,11 @@ Behaviour:
     carried, or bumped — those tumble all axes and don't trigger playback.
   - When rolling detected: fade in and play the current 30-min slot MP3
   - When roller stops for PAUSE_TIMEOUT seconds: fade out and pause
-  - When rolling resumes: rewind REWIND_MS and fade back in
+  - When rolling resumes after a SHORT pause (< REINTRO_IDLE_SEC): rewind
+    REWIND_MS and fade back in where it left off
+  - When rolling resumes after a LONG idle (>= REINTRO_IDLE_SEC): play the
+    slot's opener MP3 ("You are missing out on N events…") first, then the
+    event readout from the top
   - When a new 30-min slot starts mid-session: seamlessly switch files
 
 Dependencies:
@@ -38,9 +42,10 @@ from zoneinfo import ZoneInfo
 AUDIO_DIR         = os.environ.get("FOMO_AUDIO_DIR", os.path.expanduser("~/audio"))
 BM_TZ             = ZoneInfo("America/Los_Angeles")
 
-# TESTING: set to a filename in AUDIO_DIR to always play that one file,
-# ignoring the clock. Leave None for normal 30-min time-slot playback.
-TEST_AUDIO_FILE   = None
+# TESTING: set FOMO_TEST_FILE to a filename in AUDIO_DIR to always play that
+# one file, ignoring the clock. Unset for normal 30-min time-slot playback.
+# (Its matching <slot>_opener.mp3 is used for the opener automatically.)
+TEST_AUDIO_FILE   = os.environ.get("FOMO_TEST_FILE")
 
 # Roll detection (gyroscope-based). Rolling is sustained rotation about the
 # roller's long axis: a high roll-axis rate (|gy|) while the other two axes
@@ -62,12 +67,15 @@ PAUSE_TIMEOUT     = 2.0         # seconds stopped before it pauses
 ROLL_START_SEC    = 1.0         # must roll this long before (re)starting
                                 # playback — ignores quick brushes/bumps
 REWIND_MS         = 4000        # rewind this many ms on resume
+REINTRO_IDLE_SEC  = 30          # if the roller's been still at least this long,
+                                # replay the slot's opener before the events
+                                # instead of resuming where it left off
 SLOT_MINUTES      = 30
 
 # Volume
 MAX_VOLUME        = 100         # 0–200; 100 = unity, push higher if needed
 FADE_IN_DURATION  = 1.5         # seconds for a full fade in (smooth start)
-FADE_OUT_DURATION = 0.5         # seconds for a full fade out (quick stop)
+FADE_OUT_DURATION = 1.0         # seconds for a full fade out
 FADE_STEPS        = 20
 
 # Bluetooth — speaker MAC comes from the environment (see the systemd unit)
@@ -123,7 +131,7 @@ class RollDetector:
 # ── Audio file helpers ────────────────────────────────────────────────────────
 
 def current_slot_file():
-    """Return the path of the MP3 for the current 30-min slot."""
+    """Return the path of the event-readout MP3 for the current 30-min slot."""
     if TEST_AUDIO_FILE:
         return os.path.join(AUDIO_DIR, TEST_AUDIO_FILE)
     now    = datetime.now(BM_TZ)
@@ -131,6 +139,10 @@ def current_slot_file():
     slot   = now.replace(minute=minute, second=0, microsecond=0)
     fname  = slot.strftime("%Y-%m-%d_%H-%M.mp3")
     return os.path.join(AUDIO_DIR, fname)
+
+def current_opener_file():
+    """The opener MP3 for the current slot: '<slot>.mp3' -> '<slot>_opener.mp3'."""
+    return current_slot_file()[: -len(".mp3")] + "_opener.mp3"
 
 # ── VLC player wrapper ────────────────────────────────────────────────────────
 
@@ -149,7 +161,9 @@ class FomoPlayer:
 
         self._fade_thread  = None
         self._fade_cancel  = threading.Event()
-        self._current_file = None
+        self._current_file = None    # file literally loaded (opener OR body)
+        self._slot_file    = None    # the slot's body file — its identity,
+                                     # even while its opener is what's playing
 
         log.info("VLC player ready")
 
@@ -198,10 +212,18 @@ class FomoPlayer:
 
     # ── Public interface ───────────────────────────────────────────────────
 
-    def play(self, filepath, seek_ms=0):
-        """Load a file and start playing with a fade in, optionally seeking first."""
+    def play(self, filepath, seek_ms=0, fade=True):
+        """Load the slot's body file and start playing.
+
+        fade=True fades in (for genuine (re)starts — picking the roller up). Set
+        fade=False to start at full volume, used for the opener->body handoff so
+        the events continue seamlessly instead of re-fading after the opener."""
         # Kill any fade-out first so its pause callback can't land after play()
         self._cancel_fade()
+
+        # This is the active slot even if the file is missing — set it before
+        # the existence check so the main loop stops re-triggering play().
+        self._slot_file = filepath
 
         if not os.path.exists(filepath):
             # Remember it anyway so the main loop doesn't retry (and warn)
@@ -213,7 +235,7 @@ class FomoPlayer:
 
         media = self._instance.media_new(filepath)
         self._player.set_media(media)
-        self._player.audio_set_volume(0)
+        self._player.audio_set_volume(0 if fade else MAX_VOLUME)
         self._player.play()
         self._current_file = filepath
 
@@ -224,6 +246,28 @@ class FomoPlayer:
         else:
             log.info(f"Playing {os.path.basename(filepath)}")
 
+        if fade:
+            self._start_fade("in")
+
+    def play_opener(self, opener_path, body_path):
+        """Play the slot's opener with a fade in, then let the main loop advance
+        to the body once it finishes. The active slot is the *body* file, so a
+        slot change is still detected and the main loop's "finished" branch
+        rolls straight from a finished opener into the body."""
+        self._cancel_fade()
+
+        # No opener for this slot (e.g. not generated) — just play the body.
+        if not os.path.exists(opener_path):
+            self.play(body_path)
+            return
+
+        media = self._instance.media_new(opener_path)
+        self._player.set_media(media)
+        self._player.audio_set_volume(0)
+        self._player.play()
+        self._current_file = opener_path
+        self._slot_file    = body_path
+        log.info(f"Playing opener {os.path.basename(opener_path)}")
         self._start_fade("in")
 
     def pause(self):
@@ -254,6 +298,14 @@ class FomoPlayer:
     def current_file(self):
         return self._current_file
 
+    def active_slot_file(self):
+        """The body file of the slot currently loaded (opener or body)."""
+        return self._slot_file
+
+    def playing_opener(self):
+        """True while the loaded file is the slot's opener (not its body yet)."""
+        return self._current_file is not None and self._current_file != self._slot_file
+
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def main():
@@ -267,6 +319,7 @@ def main():
     last_motion    = 0.0
     roll_start     = None        # when the current roll began (None if stopped)
     is_paused      = False
+    idle_before    = 0.0         # seconds the roller sat still before this roll
 
     log.info("Listening for rolling...")
 
@@ -277,7 +330,10 @@ def main():
 
         if rolling:
             if roll_start is None:
-                roll_start = now
+                roll_start  = now
+                # How long it sat still before this roll began. Captured once,
+                # here, because last_motion is about to advance every frame.
+                idle_before = now - last_motion
             last_motion = now
 
             # Only (re)start once rolling has been sustained long enough — a
@@ -285,22 +341,43 @@ def main():
             # roll (turnarounds) don't reset roll_start; only a real stop does
             # (handled below via PAUSE_TIMEOUT), so this doesn't re-arm here.
             if (now - roll_start) >= ROLL_START_SEC:
-                audio_file = current_slot_file()
+                body_file   = current_slot_file()
+                opener_file = current_opener_file()
+                long_idle   = idle_before >= REINTRO_IDLE_SEC
 
-                if audio_file != player.current_file():
-                    # New time slot — start fresh
-                    player.play(audio_file)
+                if body_file != player.active_slot_file():
+                    # New/first time slot
+                    if long_idle:
+                        player.play_opener(opener_file, body_file)
+                    else:
+                        player.play(body_file)
+                    is_paused = False
+
+                elif long_idle:
+                    # Same slot, but the roller sat idle a good while: replay
+                    # the opener, then roll into the events from the top
+                    player.play_opener(opener_file, body_file)
                     is_paused = False
 
                 elif is_paused:
-                    # Same slot, resuming after stillness
+                    # Same slot, short pause — resume where we left off
                     player.resume()
                     is_paused = False
 
                 elif player.state() not in (vlc.State.Playing, vlc.State.Opening):
-                    # Finished playing — restart from top
-                    player.play(audio_file)
+                    if player.playing_opener():
+                        # Opener just finished -> roll straight into the events
+                        # at full volume (no re-fade after the opener)
+                        player.play(body_file, fade=False)
+                    else:
+                        # Events finished while still rolling -> loop from the
+                        # top, replaying the opener so the count is re-announced
+                        player.play_opener(opener_file, body_file)
                     is_paused = False
+
+                # The opener/resume decision is a one-shot: spend it so the
+                # frames that follow (still rolling) don't keep re-triggering.
+                idle_before = 0.0
 
         else:
             # Roller is still — after PAUSE_TIMEOUT, pause and disarm the
