@@ -189,3 +189,56 @@ being carried, not rolled). Defaults came from `calibrate_motion.py`. If you
 remount the sensor, re-run that tool and adjust; watch
 `journalctl -u fomo-roller -f` for false triggers or missed rolls.
 `ROLL_START_SEC` sets how long you must roll before it (re)starts.
+
+## 10. Freeze the build (overlay filesystem)
+
+**Do this last** — only once everything above works and is tested: audio loaded
+(step 7), all four services deployed and cold-boot tested (step 8), the speaker
+paired (step 5), and the RTC freshly seeded. The overlay makes the root
+filesystem read-only and sends all runtime writes to a RAM overlay that's
+discarded on reboot, so power loss and flash wear can't corrupt the card — the
+roller's single biggest failure mode on the playa.
+
+First cap the logs, so a week of uptime doesn't fill the RAM overlay on the 1GB
+Pi (with the overlay on, journald writes land in RAM):
+
+```sh
+sudo mkdir -p /etc/systemd/journald.conf.d
+printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=50M\n' \
+  | sudo tee /etc/systemd/journald.conf.d/volatile.conf
+sudo systemctl restart systemd-journald
+```
+
+Re-seed the RTC one last time while online so playback starts on an accurate
+clock (see step 4), then enable the overlay:
+
+```sh
+python3 /home/quesihealy/fomo-roller/rtc_sync.py rtc_pi2rtc   # system -> RTC
+sudo raspi-config     # Performance Options -> Overlay File System -> enable,
+                      # and write-protect the boot partition when prompted
+sudo reboot
+# non-interactive equivalent: sudo raspi-config nonint enable_overlayfs
+```
+
+Confirm it's active after reboot:
+
+```sh
+findmnt / | grep -q overlay && echo "root is read-only (overlay active)"
+```
+
+**To change anything later** (new audio, code, config, `apt`) you must lift the
+freeze first — the card is read-only:
+
+```sh
+sudo raspi-config     # Performance Options -> Overlay File System -> disable
+sudo reboot
+# ... rsync new audio / edit code / etc ...
+sudo raspi-config     # re-enable Overlay File System
+sudo reboot
+```
+
+Still fine read-only: the RTC sync (sets the in-memory clock and the PiSugar
+*hardware* RTC, never the card), the paired speaker (keys are baked into the
+frozen image), and the battery guard (reads only). What you give up: persistent
+logs — journald resets each boot, so capture logs before rebooting if you're
+debugging.
