@@ -67,7 +67,7 @@ PAUSE_TIMEOUT     = 2.0         # seconds stopped before it pauses
 ROLL_START_SEC    = 1.0         # must roll this long before (re)starting
                                 # playback — ignores quick brushes/bumps
 REWIND_MS         = 4000        # rewind this many ms on resume
-REINTRO_IDLE_SEC  = 15          # if the roller's been still at least this long,
+REINTRO_IDLE_SEC  = 10          # if the roller's been still at least this long,
                                 # replay the slot's opener before the events
                                 # instead of resuming where it left off
 SLOT_MINUTES      = 30
