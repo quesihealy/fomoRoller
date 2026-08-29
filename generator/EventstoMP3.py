@@ -22,8 +22,8 @@ import tts
 # pi/playback.py falls back to this file when a slot has no MP3. No opener.
 FALLBACK_FILENAME = "no_events.mp3"
 FALLBACK_TEXT = (
-    "No events happening right now. For once, you are not missing out. "
-    "Check back later. Maybe next year will be better."
+    "The burn isn't happening right now. Nothing to miss out on here. "
+    "Next year will be better."
 )
 
 
