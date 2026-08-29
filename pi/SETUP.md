@@ -102,6 +102,25 @@ the event with a fresh, NTP-accurate time.
 
 Reference: [PiSugar Power Manager](https://github.com/PiSugar/pisugar-power-manager-rs).
 
+**Clean shutdown button.** Map a PiSugar button **double-tap** to a clean
+`shutdown`, so the roller can be powered off safely in the field without SSH
+(a long *hold* is a hardware power cut — avoid it, it risks SD corruption).
+pisugar-server runs the command as root:
+
+```sh
+sudo python3 - <<'PY'
+import json
+p = "/etc/pisugar-server/config.json"
+d = json.load(open(p))
+d["double_tap_enable"] = True
+d["double_tap_shell"]  = "shutdown -h now"
+json.dump(d, open(p, "w"), indent=2)
+PY
+sudo systemctl restart pisugar-server
+# Test: double-tap the button -> the Pi halts cleanly. (Single tap just shows
+# the battery level on the LEDs.)
+```
+
 ## 5. Pair the Bluetooth speaker
 
 ```sh
