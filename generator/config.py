@@ -30,7 +30,7 @@ VOICE_POOL_SIZE = int(os.environ.get("VOICE_POOL_SIZE", "20"))
 EVENTS_PER_SLOT = int(os.environ.get("EVENTS_PER_SLOT", "7"))
 
 # Seconds of silence between events in a slot's readout
-PAUSE_SECONDS = 2
+PAUSE_SECONDS = 1
 
 BURNING_MAN_API_KEY = os.environ.get("BURNING_MAN_API_KEY")
 BURNING_MAN_YEAR = int(os.environ.get("BURNING_MAN_YEAR", datetime.now().year))

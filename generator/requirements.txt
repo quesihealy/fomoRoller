@@ -1,2 +1,5 @@
 requests>=2.31
 python-dotenv>=1.0
+# Chirp3-HD pause splicing (Google TTS): needs the ffmpeg binary on PATH too
+pydub>=0.25
+audioop-lts>=0.2; python_version >= "3.13"

@@ -6,6 +6,7 @@ to an MP3, applying pauses between lines however its API supports.
 
 import base64
 import html
+import io
 import sys
 from abc import ABC, abstractmethod
 from typing import NamedTuple
@@ -39,11 +40,17 @@ class TTSProvider(ABC):
 
 
 class GoogleTTS(TTSProvider):
-    """Google Cloud TTS. Free tier (4M WaveNet + 1M Neural2 chars/month)
-    covers the full project. Chirp3 HD is excluded: no SSML breaks."""
+    """Google Cloud TTS using the Chirp3-HD voices — the most natural-sounding
+    tier, and still inside the free 1M-chars/month quota for the whole project.
+
+    Chirp3-HD doesn't support SSML, so the between-event pauses can't be done
+    with <break> tags. Instead each line is synthesized on its own and the
+    clips are spliced together with PAUSE_SECONDS of silence (needs ffmpeg via
+    pydub). Older SSML-capable voices (Neural2/WaveNet) still work in one shot."""
 
     name = "google"
     api_key_env = "GOOGLE_TTS_API_KEY"
+    SYNTH_URL = "https://texttospeech.googleapis.com/v1/text:synthesize"
 
     def voices(self) -> list[Voice]:
         response = requests.get(
@@ -55,14 +62,20 @@ class GoogleTTS(TTSProvider):
         return [
             Voice(v["name"], v["name"])
             for v in response.json()["voices"]
-            if "Neural2" in v["name"] or "Wavenet" in v["name"]
+            if "Chirp3-HD" in v["name"]
         ]
 
     def synthesize(self, lines: list[str], voice: Voice, filepath: str) -> None:
+        if "Chirp3" in voice.voice_id:
+            self._synthesize_spliced(lines, voice, filepath)
+        else:
+            self._synthesize_ssml(lines, voice, filepath)
+
+    def _synthesize_ssml(self, lines: list[str], voice: Voice, filepath: str) -> None:
         pause = f' <break time="{config.PAUSE_SECONDS}s"/> '
         ssml = "<speak>" + pause.join(html.escape(line) for line in lines) + "</speak>"
         response = requests.post(
-            "https://texttospeech.googleapis.com/v1/text:synthesize",
+            self.SYNTH_URL,
             params={"key": self.api_key},
             json={
                 "input": {"ssml": ssml},
@@ -74,6 +87,31 @@ class GoogleTTS(TTSProvider):
         response.raise_for_status()
         with open(filepath, "wb") as f:
             f.write(base64.b64decode(response.json()["audioContent"]))
+
+    def _synth_line(self, text: str, voice: Voice) -> bytes:
+        """Synthesize one plain-text line to MP3 bytes (no SSML)."""
+        response = requests.post(
+            self.SYNTH_URL,
+            params={"key": self.api_key},
+            json={
+                "input": {"text": text},
+                "voice": {"languageCode": "en-US", "name": voice.voice_id},
+                "audioConfig": {"audioEncoding": "MP3"},
+            },
+            timeout=120,
+        )
+        response.raise_for_status()
+        return base64.b64decode(response.json()["audioContent"])
+
+    def _synthesize_spliced(self, lines: list[str], voice: Voice, filepath: str) -> None:
+        from pydub import AudioSegment  # lazy: only Chirp3-HD needs ffmpeg
+
+        gap = AudioSegment.silent(duration=int(config.PAUSE_SECONDS * 1000))
+        combined = None
+        for line in lines:
+            clip = AudioSegment.from_file(io.BytesIO(self._synth_line(line, voice)), format="mp3")
+            combined = clip if combined is None else combined + gap + clip
+        combined.export(filepath, format="mp3")
 
 
 class ElevenLabsTTS(TTSProvider):

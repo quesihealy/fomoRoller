@@ -105,8 +105,14 @@ def slot_footprint(event: dict) -> int:
     return total
 
 
-def build_script(events: list[dict], camp_names: dict[str, str]) -> list[str]:
-    """Lines to read for one slot; the provider decides how to pause between them."""
+def build_script(events: list[dict], camp_names: dict[str, str]) -> tuple[list[str], list[str]]:
+    """Return (opener_lines, body_lines) for one slot.
+
+    They're kept separate so each becomes its own MP3: the opener ("You are
+    missing out on N events…") plays only when the roller's been idle a while,
+    while the body (the event readout) is what plays/resumes normally. See
+    pi/playback.py. The "To name a few:" bridge rides with the opener so the
+    body starts cleanly on the first event when the opener is skipped."""
     # Quiet slots read everything they have; only busy ones get filtered
     if len(events) >= config.EVENTS_PER_SLOT:
         candidates = eligible_events(events, camp_names) or events
@@ -126,21 +132,22 @@ def build_script(events: list[dict], camp_names: dict[str, str]) -> list[str]:
     opener = f"You are missing out on {total} event{'' if total == 1 else 's'} happening right now."
     if total > len(candidates):
         opener += " To name a few:"
-    lines = [opener]
+    opener_lines = [opener]
 
+    body_lines = []
     for e in candidates:
         title = e.get("title", "Untitled")
         desc = e.get("description", "")
         camp = camp_names.get(e.get("hosted_by_camp"))
         if camp and camp.lower() != title.lower():
-            lines.append(f"{camp} is hosting {title}. {desc}")
+            body_lines.append(f"{camp} is hosting {title}. {desc}")
         else:
-            lines.append(f"{title}. {desc}")
+            body_lines.append(f"{title}. {desc}")
 
     if total > len(candidates):
-        lines.append(f"That's {len(candidates)} of the {total} events. Fucking exhausting.")
+        body_lines.append(f"That's {len(candidates)} of the {total} events.")
 
-    return lines
+    return opener_lines, body_lines
 
 
 def build_voice_pool(provider: tts.TTSProvider) -> list[tts.Voice]:
@@ -162,15 +169,20 @@ def generate_audio(slot_map, camp_names, provider, only_slot=None):
     for slot_key, slot_events in sorted(slot_map.items()):
         if only_slot and slot_key != only_slot:
             continue
-        filepath = os.path.join(config.OUTPUT_DIR, f"{slot_key}.mp3")
-        if os.path.exists(filepath):
+        body_path   = os.path.join(config.OUTPUT_DIR, f"{slot_key}.mp3")
+        opener_path = os.path.join(config.OUTPUT_DIR, f"{slot_key}_opener.mp3")
+        if os.path.exists(body_path) and os.path.exists(opener_path):
             print(f"  Skipping {slot_key} (already exists)")
             continue
-        lines = build_script(slot_events, camp_names)
-        voice = random.choice(voice_pool)
+        opener_lines, body_lines = build_script(slot_events, camp_names)
+        voice = random.choice(voice_pool)   # same voice for a slot's opener + body
         print(f"  {slot_key}: {len(slot_events)} events, voice={voice.name}")
-        provider.synthesize(lines, voice, filepath)
-        print(f"  Saved: {filepath}")
+        if not os.path.exists(opener_path):
+            provider.synthesize(opener_lines, voice, opener_path)
+            print(f"  Saved: {opener_path}")
+        if not os.path.exists(body_path):
+            provider.synthesize(body_lines, voice, body_path)
+            print(f"  Saved: {body_path}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -211,10 +223,12 @@ def main():
         print(f"Using TTS provider: {provider.name}")
         generate_audio(slot_map, camp_names, provider, only_slot=args.slot)
     else:
-        total_chars = sum(
-            len(" ".join(build_script(v, camp_names))) for v in slot_map.values()
-        )
-        print(f"Dry run: would generate {len(slot_map)} MP3s (~{total_chars:,} chars).")
+        total_chars = 0
+        for v in slot_map.values():
+            opener_lines, body_lines = build_script(v, camp_names)
+            total_chars += len(" ".join(opener_lines + body_lines))
+        print(f"Dry run: would generate {2 * len(slot_map)} MP3s "
+              f"(opener + body per slot, ~{total_chars:,} chars).")
         print("Re-run with --generate to synthesize audio.")
 
     print("Done. Copy ./audio to the SD card.")
