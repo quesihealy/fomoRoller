@@ -2,7 +2,7 @@
 """
 FOMO Roller — Pi Playback Script
 ==================================
-Runs on the Raspberry Pi Zero 2W inside the foam roller.
+Runs on the Raspberry Pi 4 inside the foam roller.
 Set this up to auto-start on boot via systemd.
 
 Behaviour:

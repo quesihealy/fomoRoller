@@ -190,7 +190,24 @@ remount the sensor, re-run that tool and adjust; watch
 `journalctl -u fomo-roller -f` for false triggers or missed rolls.
 `ROLL_START_SEC` sets how long you must roll before it (re)starts.
 
-## 10. Freeze the build (overlay filesystem)
+## 10. Field power diet (WiFi + LEDs off)
+
+The playa build is fully offline, so the WiFi radio is dead weight — turning it
+off (plus the two status LEDs) saves battery and a little heat. Bluetooth stays
+on for audio. `field_mode.sh` toggles a marked block in the boot config:
+
+```sh
+/home/quesihealy/fomo-roller/field_mode.sh on    # WiFi + LEDs off, then reboot
+```
+
+**This disables WiFi — you'll lose SSH after the reboot.** Do it near the end,
+once you no longer need remote access, and **before** the overlay freeze (step
+11), since the boot config must still be writable. To undo: run `field_mode.sh
+off` from a local console (keyboard + monitor), or pop the SD card into any
+computer and delete the `fomo-field-diet` block from the boot `config.txt`
+(it's the FAT boot partition, readable anywhere).
+
+## 11. Freeze the build (overlay filesystem)
 
 **Do this last** — only once everything above works and is tested: audio loaded
 (step 7), all four services deployed and cold-boot tested (step 8), the speaker
