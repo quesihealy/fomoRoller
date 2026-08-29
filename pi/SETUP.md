@@ -144,23 +144,34 @@ rsync -avz --progress audio/ quesihealy@<pi-hostname>.local:/home/quesihealy/aud
 
 ## 8. Install the systemd services
 
-Two units: `fomo-bt-connect` reliably connects the Bluetooth speaker at boot
-(retrying, and clearing the rfkill soft-block), and `fomo-roller` runs the
-playback — ordered to start only once the speaker and `bluealsa` are up. Set
-`FOMO_BT_MAC` to your speaker's address in **both** units.
+Three units: `fomo-bt-connect` reliably connects the Bluetooth speaker at boot
+(retrying, and clearing the rfkill soft-block), `fomo-bt-watchdog` keeps it
+connected for the rest of the session, and `fomo-roller` runs the playback —
+ordered to start only once the speaker and `bluealsa` are up. Set `FOMO_BT_MAC`
+to your speaker's address in **all three** units.
 
 ```sh
-sudo cp service/fomo-bt-connect.service service/fomo-roller.service /etc/systemd/system/
+sudo cp service/fomo-bt-connect.service service/fomo-bt-watchdog.service \
+  service/fomo-roller.service /etc/systemd/system/
 sudo sed -i 's/XX:XX:XX:XX:XX:XX/AA:BB:CC:DD:EE:FF/' \
-  /etc/systemd/system/fomo-bt-connect.service /etc/systemd/system/fomo-roller.service
+  /etc/systemd/system/fomo-bt-connect.service \
+  /etc/systemd/system/fomo-bt-watchdog.service \
+  /etc/systemd/system/fomo-roller.service
 sudo systemctl enable bluealsa                     # audio bridge, on boot
 sudo systemctl daemon-reload
-sudo systemctl enable --now fomo-bt-connect fomo-roller
-journalctl -u fomo-roller -f   # watch logs
+sudo systemctl enable --now fomo-bt-connect fomo-bt-watchdog fomo-roller
+journalctl -u fomo-roller -u fomo-bt-watchdog -f   # watch logs
 ```
 
 The `pisugar-rtc-sync` unit from step 4 also runs before `fomo-roller`, so the
 clock is correct before playback picks an MP3 slot.
+
+**Self-healing audio:** if the speaker dies mid-event and you power it back
+on, `fomo-bt-watchdog` reconnects it within a few seconds and then restarts
+`fomo-roller`, so VLC re-opens the freshly re-exposed bluealsa sink (a running
+player can't recover a PCM that disappeared). Test it: with everything running,
+power the speaker off, wait, power it back on, and confirm audio returns on the
+next roll — watch `journalctl -u fomo-bt-watchdog -f` for the drop/reconnect.
 
 ## 9. Tune roll detection
 

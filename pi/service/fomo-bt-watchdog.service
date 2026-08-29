@@ -1,0 +1,17 @@
+[Unit]
+Description=FOMO Roller Bluetooth speaker keep-alive watchdog
+# Starts after the boot-time connect; then runs for the whole session,
+# reconnecting the speaker if it drops and restarting playback on reconnect.
+After=bluetooth.target fomo-bt-connect.service
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+# Set this to your speaker's MAC (same value as the other units)
+Environment=FOMO_BT_MAC=XX:XX:XX:XX:XX:XX
+ExecStart=/bin/bash /home/quesihealy/fomo-roller/bt_watchdog.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
