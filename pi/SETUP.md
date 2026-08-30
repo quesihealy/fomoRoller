@@ -212,8 +212,10 @@ remount the sensor, re-run that tool and adjust; watch
 ## 10. Field power diet (WiFi + LEDs off)
 
 The playa build is fully offline, so the WiFi radio is dead weight — turning it
-off (plus the two status LEDs) saves battery and a little heat. Bluetooth stays
-on for audio. `field_mode.sh` toggles a marked block in the boot config:
+off saves battery. Bluetooth stays on for audio, and the Pi's status LEDs are
+left on as an at-a-glance "is it alive" indicator (they cost negligible power,
+and with SSH gone they're your only remote signal). `field_mode.sh` toggles a
+marked block in the boot config:
 
 ```sh
 /home/quesihealy/fomo-roller/field_mode.sh on    # WiFi + LEDs off, then reboot
